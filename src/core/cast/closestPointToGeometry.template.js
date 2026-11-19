@@ -152,8 +152,18 @@ export function closestPointToGeometry/* @echo INDIRECT_STRING */(
 										}
 
 										closestDistance = dist;
+
+										/* @if INDIRECT */
+
+										closestDistanceTriIndex = bvh.resolveTriangleIndex( i );
+										closestDistanceOtherTriIndex = otherBvh.resolveTriangleIndex( i2 );
+
+										/* @else */
+
 										closestDistanceTriIndex = i;
 										closestDistanceOtherTriIndex = i2;
+
+										/* @endif */
 
 									}
 
@@ -209,7 +219,16 @@ export function closestPointToGeometry/* @echo INDIRECT_STRING */(
 								}
 
 								closestDistance = dist;
+
+								/* @if INDIRECT */
+
+								closestDistanceTriIndex = bvh.resolveTriangleIndex( i );
+
+								/* @else */
+
 								closestDistanceTriIndex = i;
+
+								/* @endif */
 								closestDistanceOtherTriIndex = i2;
 
 							}

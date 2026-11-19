@@ -790,9 +790,94 @@ ExtendedTriangle.prototype.distanceToTriangle = ( function () {
 
 	const point = /* @__PURE__ */ new Vector3();
 	const point2 = /* @__PURE__ */ new Vector3();
+	const overlapPoint = /* @__PURE__ */ new Vector3();
+	const overlapAccum = /* @__PURE__ */ new Vector3();
+	const candidate = /* @__PURE__ */ new Vector3();
+	const candidate2 = /* @__PURE__ */ new Vector3();
+	const scratchPoint = /* @__PURE__ */ new Vector3();
 	const cornerFields = [ 'a', 'b', 'c' ];
 	const line1 = /* @__PURE__ */ new Line3();
 	const line2 = /* @__PURE__ */ new Line3();
+
+	function getPoints( triangle ) {
+
+		return triangle.points || [ triangle.a, triangle.b, triangle.c ];
+
+	}
+
+	function distanceToPoint( triangle, p ) {
+
+		triangle.closestPointToPoint( p, scratchPoint );
+		return p.distanceTo( scratchPoint );
+
+	}
+
+	// `intersectsTriangle` reports a zero-length segment for coplanar triangles, which does not
+	// represent the actual overlap. This finds a point that is contained by both coplanar
+	// triangles by collecting the vertices of each triangle that lie inside the other and the
+	// edge / edge crossings. The average of those points is guaranteed to be inside both convex
+	// triangles. Returns false if no shared point can be found.
+	function findCoplanarOverlapPoint( tri1, tri2, target ) {
+
+		const points1 = getPoints( tri1 );
+		const points2 = getPoints( tri2 );
+
+		let scale = 1;
+		for ( let i = 0; i < 3; i ++ ) {
+
+			const p1 = points1[ i ];
+			const p2 = points2[ i ];
+			scale = Math.max( scale, Math.abs( p1.x ), Math.abs( p1.y ), Math.abs( p1.z ) );
+			scale = Math.max( scale, Math.abs( p2.x ), Math.abs( p2.y ), Math.abs( p2.z ) );
+
+		}
+
+		const epsilon = scale * 1e-9;
+		let count = 0;
+		overlapAccum.set( 0, 0, 0 );
+
+		function addPoint( p ) {
+
+			if ( distanceToPoint( tri1, p ) <= epsilon && distanceToPoint( tri2, p ) <= epsilon ) {
+
+				overlapAccum.add( p );
+				count ++;
+
+			}
+
+		}
+
+		for ( let i = 0; i < 3; i ++ ) {
+
+			addPoint( points1[ i ] );
+			addPoint( points2[ i ] );
+
+		}
+
+		for ( let i = 0; i < 3; i ++ ) {
+
+			line1.set( points1[ i ], points1[ ( i + 1 ) % 3 ] );
+			for ( let j = 0; j < 3; j ++ ) {
+
+				line2.set( points2[ j ], points2[ ( j + 1 ) % 3 ] );
+				closestPointsSegmentToSegment( line1, line2, candidate, candidate2 );
+				candidate.add( candidate2 ).multiplyScalar( 0.5 );
+				addPoint( candidate );
+
+			}
+
+		}
+
+		if ( count === 0 ) {
+
+			return false;
+
+		}
+
+		target.copy( overlapAccum ).multiplyScalar( 1 / count );
+		return true;
+
+	}
 
 	return function distanceToTriangle( other, target1 = null, target2 = null ) {
 
@@ -801,8 +886,39 @@ ExtendedTriangle.prototype.distanceToTriangle = ( function () {
 
 			if ( target1 || target2 ) {
 
-				if ( target1 ) lineTarget.getCenter( target1 );
-				if ( target2 ) lineTarget.getCenter( target2 );
+				lineTarget.getCenter( overlapPoint );
+
+				// Coplanar intersections are reported as a zero-length segment, which does not
+				// describe the shared region. Check the midpoint and, if it is not on both
+				// triangles, find a point in the overlap region instead.
+				if ( lineTarget.start.distanceToSquared( lineTarget.end ) === 0 ) {
+
+					let scale = 1;
+					const thisPoints = getPoints( this );
+					const otherPoints = getPoints( other );
+					for ( let i = 0; i < 3; i ++ ) {
+
+						const p1 = thisPoints[ i ];
+						const p2 = otherPoints[ i ];
+						scale = Math.max( scale, Math.abs( p1.x ), Math.abs( p1.y ), Math.abs( p1.z ) );
+						scale = Math.max( scale, Math.abs( p2.x ), Math.abs( p2.y ), Math.abs( p2.z ) );
+
+					}
+
+					const epsilon = scale * 1e-9;
+					if (
+						distanceToPoint( this, overlapPoint ) > epsilon ||
+						distanceToPoint( other, overlapPoint ) > epsilon
+					) {
+
+						findCoplanarOverlapPoint( this, other, overlapPoint );
+
+					}
+
+				}
+
+				if ( target1 ) target1.copy( overlapPoint );
+				if ( target2 ) target2.copy( overlapPoint );
 
 			}
 
