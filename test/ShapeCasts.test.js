@@ -2,6 +2,7 @@
 import {
 	Mesh,
 	BufferGeometry,
+	BufferAttribute,
 	SphereGeometry,
 	Vector3,
 	Quaternion,
@@ -9,8 +10,10 @@ import {
 	Sphere,
 	Box3,
 	Euler,
+	Ray,
 	Raycaster,
 	Scene,
+	Triangle,
 	TorusGeometry,
 	MeshBasicMaterial,
 	BoxGeometry,
@@ -19,9 +22,11 @@ import {
 } from 'three';
 import {
 	MeshBVH as _MeshBVH,
+	ExtendedTriangle,
 	acceleratedRaycast,
 	computeBoundsTree,
 	disposeBoundsTree,
+	getTriangleHitPointInfo,
 	CONTAINED,
 	INTERSECTED,
 	NOT_INTERSECTED,
@@ -866,6 +871,206 @@ function runSuiteWithOptions( defaultOptions ) {
 			} );
 
 		}
+
+		describe( 'coplanar overlapping triangles', () => {
+
+			// two coplanar triangles where the second is fully contained in the first
+			const tri1 = [[ 0, 0, 2 ], [ 4, 0, 2 ], [ 0, 4, 2 ]];
+			const tri2 = [[ 1, 1, 2 ], [ 3, 1, 2 ], [ 1, 3, 2 ]];
+
+			function makeGeometry( triangles, indexed ) {
+
+				const positions = [];
+				const index = [];
+				for ( const triangle of triangles ) {
+
+					const base = positions.length / 3;
+					for ( const p of triangle ) positions.push( ...p );
+					index.push( base, base + 1, base + 2 );
+
+				}
+
+				const geometry = new BufferGeometry();
+				geometry.setAttribute( 'position', new BufferAttribute( new Float32Array( positions ), 3 ) );
+				if ( indexed ) geometry.setIndex( index );
+
+				return geometry;
+
+			}
+
+			function expectPointOnGeometry( point, geometry, faceIndex ) {
+
+				const positions = geometry.attributes.position;
+				const indices = geometry.index ? geometry.index.array : null;
+				const a = indices ? indices[ faceIndex * 3 ] : faceIndex * 3;
+				const b = indices ? indices[ faceIndex * 3 + 1 ] : faceIndex * 3 + 1;
+				const c = indices ? indices[ faceIndex * 3 + 2 ] : faceIndex * 3 + 2;
+
+				const triA = new Vector3().fromBufferAttribute( positions, a );
+				const triB = new Vector3().fromBufferAttribute( positions, b );
+				const triC = new Vector3().fromBufferAttribute( positions, c );
+
+				const barycoord = Triangle.getBarycoord( point, triA, triB, triC, new Vector3() );
+				expect( barycoord ).not.toBeNull();
+
+				const EPSILON = 1e-5;
+				expect( barycoord.x ).toBeGreaterThanOrEqual( - EPSILON );
+				expect( barycoord.y ).toBeGreaterThanOrEqual( - EPSILON );
+				expect( barycoord.z ).toBeGreaterThanOrEqual( - EPSILON );
+
+			}
+
+			for ( const indexed of [ false, true ] ) {
+
+				it( `should return points on the overlap area and valid face indices (indexed: ${ indexed })`, () => {
+
+					const geom = makeGeometry( [ tri1 ], indexed );
+					const otherGeom = makeGeometry( [ tri2 ], indexed );
+					const bvh = new MeshBVH( geom );
+					geom.boundsTree = bvh;
+
+					const target1 = {};
+					const target2 = {};
+					bvh.closestPointToGeometry( otherGeom, new Matrix4(), target1, target2 );
+
+					expect( target1.distance ).toBe( 0 );
+					expect( target2.distance ).toBe( 0 );
+					expect( target1.point.distanceTo( target2.point ) ).toBeCloseTo( 0 );
+
+					expectPointOnGeometry( target1.point, geom, target1.faceIndex );
+					expectPointOnGeometry( target2.point, otherGeom, target2.faceIndex );
+
+				} );
+
+				it( `should match the triangle-level result (indexed: ${ indexed })`, () => {
+
+					const geom = makeGeometry( [ tri1 ], indexed );
+					const otherGeom = makeGeometry( [ tri2 ], indexed );
+					const bvh = new MeshBVH( geom );
+					geom.boundsTree = bvh;
+
+					const triangle = new ExtendedTriangle(
+						new Vector3( ...tri1[ 0 ] ),
+						new Vector3( ...tri1[ 1 ] ),
+						new Vector3( ...tri1[ 2 ] ),
+					);
+					const otherTriangle = new ExtendedTriangle(
+						new Vector3( ...tri2[ 0 ] ),
+						new Vector3( ...tri2[ 1 ] ),
+						new Vector3( ...tri2[ 2 ] ),
+					);
+
+					const triTarget1 = new Vector3();
+					const triTarget2 = new Vector3();
+					expect( triangle.distanceToTriangle( otherTriangle, triTarget1, triTarget2 ) ).toBe( 0 );
+
+					const target1 = {};
+					const target2 = {};
+					bvh.closestPointToGeometry( otherGeom, new Matrix4(), target1, target2 );
+
+					expect( target1.point.distanceTo( triTarget1 ) ).toBeCloseTo( 0 );
+					expect( target2.point.distanceTo( triTarget2 ) ).toBeCloseTo( 0 );
+
+				} );
+
+				it( `should return points on the overlap area when the other geometry has no bounds tree (indexed: ${ indexed })`, () => {
+
+					const geom = makeGeometry( [ tri1 ], indexed );
+					const otherGeom = makeGeometry( [ tri2 ], indexed );
+					const bvh = new MeshBVH( geom );
+					geom.boundsTree = bvh;
+					expect( otherGeom.boundsTree ).toBeUndefined();
+
+					const target1 = {};
+					const target2 = {};
+					bvh.closestPointToGeometry( otherGeom, new Matrix4(), target1, target2 );
+
+					expect( target1.distance ).toBe( 0 );
+					expect( target1.point.distanceTo( target2.point ) ).toBeCloseTo( 0 );
+					expectPointOnGeometry( target1.point, geom, target1.faceIndex );
+					expectPointOnGeometry( target2.point, otherGeom, target2.faceIndex );
+
+				} );
+
+			}
+
+		} );
+
+		describe( 'faceIndex consistency across build modes', () => {
+
+			it( 'should return a face index usable with getTriangleHitPointInfo for every build mode', () => {
+
+				const indirectModes = [ false, true ];
+				for ( const indirect of indirectModes ) {
+
+					// build a wall of 40 coplanar plates, 8 columns by 5 rows
+					const positions = [];
+					const index = [];
+					for ( let i = 0; i < 40; i ++ ) {
+
+						const x = ( i % 8 ) * 3;
+						const y = Math.floor( i / 8 ) * 3;
+						const z = ( i % 3 ) * 0.2;
+						const base = positions.length / 3;
+						positions.push( x, y, z, x + 1, y, z, x, y + 1, z );
+						index.push( base, base + 1, base + 2 );
+
+					}
+
+					const geom = new BufferGeometry();
+					geom.setAttribute( 'position', new BufferAttribute( new Float32Array( positions ), 3 ) );
+					geom.setIndex( index );
+
+					const bvh = new MeshBVH( geom, { indirect } );
+					const ray = new Ray( new Vector3( 9.2, 3.2, 5 ), new Vector3( 0, 0, - 1 ) );
+
+					// when the geometry index is left untouched the face index refers to the
+					// original triangle, otherwise it refers to the reordered index buffer.
+					const expectedFaceIndex = indirect ? 11 : 4;
+					const rayHit = bvh.raycastFirst( ray );
+					expect( rayHit.faceIndex ).toBe( expectedFaceIndex );
+					expect( rayHit.distance ).toBeCloseTo( 4.6 );
+					expect( rayHit.point.distanceTo( new Vector3( 9.2, 3.2, 0.4 ) ) ).toBeCloseTo( 0 );
+
+					const closestHit = bvh.closestPointToPoint( new Vector3( 9.2, 3.2, 5 ) );
+					expect( closestHit.faceIndex ).toBe( rayHit.faceIndex );
+					expect( closestHit.point.distanceTo( rayHit.point ) ).toBeCloseTo( 0 );
+
+					// a raised plate that sits one unit above the wall
+					const otherGeom = new BufferGeometry();
+					otherGeom.setAttribute( 'position', new BufferAttribute( new Float32Array( [
+						9.2, 3.2, 1.4,
+						9.8, 3.2, 1.4,
+						9.2, 3.8, 1.4,
+					] ), 3 ) );
+
+					const target1 = {};
+					const target2 = {};
+					bvh.closestPointToGeometry( otherGeom, new Matrix4(), target1, target2 );
+					expect( target1.faceIndex ).toBe( rayHit.faceIndex );
+					expect( target1.distance ).toBeCloseTo( 1 );
+					expect( target1.point.distanceTo( new Vector3( 9.2, 3.2, 0.4 ) ) ).toBeCloseTo( 0 );
+					expect( target2.point.distanceTo( new Vector3( 9.2, 3.2, 1.4 ) ) ).toBeCloseTo( 0 );
+
+					// the reported face index must identify the triangle the point is on
+					const info = getTriangleHitPointInfo( target1.point, geom, target1.faceIndex );
+					const { a, b, c } = info.face;
+					const triangle = new Triangle(
+						new Vector3().fromBufferAttribute( geom.attributes.position, a ),
+						new Vector3().fromBufferAttribute( geom.attributes.position, b ),
+						new Vector3().fromBufferAttribute( geom.attributes.position, c ),
+					);
+					const barycoord = Triangle.getBarycoord( target1.point, triangle.a, triangle.b, triangle.c, new Vector3() );
+					expect( barycoord ).not.toBeNull();
+					expect( barycoord.x ).toBeGreaterThanOrEqual( - 1e-5 );
+					expect( barycoord.y ).toBeGreaterThanOrEqual( - 1e-5 );
+					expect( barycoord.z ).toBeGreaterThanOrEqual( - 1e-5 );
+
+				}
+
+			} );
+
+		} );
 
 	} );
 

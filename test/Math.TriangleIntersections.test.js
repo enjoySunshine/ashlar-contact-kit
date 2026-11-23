@@ -559,6 +559,148 @@ describe( 'Triangle Intersection line', () => {
 
 } );
 
+describe( 'Coplanar triangle distance', () => {
+
+	// returns the barycentric coordinates of the point within the triangle or null if it lies
+	// outside of it.
+	function getBarycoordOrNull( triangle, point ) {
+
+		const barycoord = Triangle.getBarycoord( point, triangle.a, triangle.b, triangle.c, new Vector3() );
+		if ( barycoord === null ) return null;
+
+		const EPSILON = 1e-6;
+		const { x, y, z } = barycoord;
+		if ( x < - EPSILON || y < - EPSILON || z < - EPSILON ) return null;
+
+		return barycoord;
+
+	}
+
+	function expectPointInside( triangle, point ) {
+
+		expect( getBarycoordOrNull( triangle, point ) ).not.toBeNull();
+
+	}
+
+	it( 'should return points inside the overlapping area of two nested coplanar triangles', () => {
+
+		const t1 = new ExtendedTriangle(
+			new Vector3( 0, 0, 2 ),
+			new Vector3( 4, 0, 2 ),
+			new Vector3( 0, 4, 2 ),
+		);
+		const t2 = new ExtendedTriangle(
+			new Vector3( 1, 1, 2 ),
+			new Vector3( 3, 1, 2 ),
+			new Vector3( 1, 3, 2 ),
+		);
+
+		const target1 = new Vector3();
+		const target2 = new Vector3();
+		expect( t1.distanceToTriangle( t2, target1, target2 ) ).toBe( 0 );
+
+		expect( target1.distanceTo( target2 ) ).toBeCloseTo( 0 );
+		expectPointInside( t1, target1 );
+		expectPointInside( t2, target2 );
+
+		// the result must not depend on the order the triangles are passed in
+		const target3 = new Vector3();
+		const target4 = new Vector3();
+		expect( t2.distanceToTriangle( t1, target3, target4 ) ).toBe( 0 );
+		expect( target3.distanceTo( target4 ) ).toBeCloseTo( 0 );
+		expectPointInside( t1, target4 );
+		expectPointInside( t2, target3 );
+
+	} );
+
+	it( 'should handle coplanar triangles that only partially overlap', () => {
+
+		const t1 = new ExtendedTriangle(
+			new Vector3( 0, 0, 2 ),
+			new Vector3( 4, 0, 2 ),
+			new Vector3( 0, 4, 2 ),
+		);
+		const t2 = new ExtendedTriangle(
+			new Vector3( 2, - 1, 2 ),
+			new Vector3( 5, 1, 2 ),
+			new Vector3( 2, 3, 2 ),
+		);
+
+		const target1 = new Vector3();
+		const target2 = new Vector3();
+		expect( t1.distanceToTriangle( t2, target1, target2 ) ).toBe( 0 );
+		expect( target1.distanceTo( target2 ) ).toBeCloseTo( 0 );
+		expectPointInside( t1, target1 );
+		expectPointInside( t2, target2 );
+
+	} );
+
+	it( 'should handle overlapping coplanar triangles in an arbitrarily oriented frame', () => {
+
+		const t1 = new ExtendedTriangle(
+			new Vector3( 0, 0, 0 ),
+			new Vector3( 0, 0, 4 ),
+			new Vector3( 0, 4, 0 ),
+		);
+		const t2 = new ExtendedTriangle(
+			new Vector3( 0, 1, 1 ),
+			new Vector3( 0, 3, 1 ),
+			new Vector3( 0, 1, 3 ),
+		);
+
+		const target1 = new Vector3();
+		const target2 = new Vector3();
+		expect( t1.distanceToTriangle( t2, target1, target2 ) ).toBe( 0 );
+		expect( target1.distanceTo( target2 ) ).toBeCloseTo( 0 );
+		expectPointInside( t1, target1 );
+		expectPointInside( t2, target2 );
+
+	} );
+
+	it( 'should not report separated coplanar triangles as touching', () => {
+
+		const t1 = new ExtendedTriangle(
+			new Vector3( 0, 0, 2 ),
+			new Vector3( 4, 0, 2 ),
+			new Vector3( 0, 4, 2 ),
+		);
+		const t2 = new ExtendedTriangle(
+			new Vector3( 10, 10, 2 ),
+			new Vector3( 12, 10, 2 ),
+			new Vector3( 10, 12, 2 ),
+		);
+
+		const target1 = new Vector3();
+		const target2 = new Vector3();
+		expect( t1.distanceToTriangle( t2, target1, target2 ) ).toBeCloseTo( Math.sqrt( 128 ) );
+		expect( target1.distanceTo( new Vector3( 2, 2, 2 ) ) ).toBeCloseTo( 0 );
+		expect( target2.distanceTo( new Vector3( 10, 10, 2 ) ) ).toBeCloseTo( 0 );
+
+	} );
+
+	it( 'should keep using the intersection line for non-coplanar crossings', () => {
+
+		const t1 = new ExtendedTriangle(
+			new Vector3( 0, 0, 2 ),
+			new Vector3( 4, 0, 2 ),
+			new Vector3( 0, 4, 2 ),
+		);
+		const t2 = new ExtendedTriangle(
+			new Vector3( 1, 1, 1 ),
+			new Vector3( 3, 1, 1 ),
+			new Vector3( 1, 1, 3 ),
+		);
+
+		const target1 = new Vector3();
+		const target2 = new Vector3();
+		expect( t1.distanceToTriangle( t2, target1, target2 ) ).toBe( 0 );
+		expect( target1.distanceTo( new Vector3( 1.5, 1, 2 ) ) ).toBeCloseTo( 0 );
+		expect( target2.distanceTo( new Vector3( 1.5, 1, 2 ) ) ).toBeCloseTo( 0 );
+
+	} );
+
+} );
+
 describe( 'ExtendedTriangle.closestPointToSegment', () => {
 
 	it( 'should return zero when the segment crosses the triangle', () => {

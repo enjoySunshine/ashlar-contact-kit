@@ -12,6 +12,196 @@ function isNearZero( value ) {
 
 }
 
+// relative tolerance used to decide whether two intersecting triangles are coplanar and to
+// keep boundary points during the overlap polygon clip.
+const COPLANAR_EPSILON = 1e-10;
+
+// scratch variables for computing a point inside the overlap of two coplanar triangles
+const _overlapNormal = /* @__PURE__ */ new Vector3();
+const _overlapU = /* @__PURE__ */ new Vector3();
+const _overlapV = /* @__PURE__ */ new Vector3();
+const _overlapDelta = /* @__PURE__ */ new Vector3();
+const _overlapSelf = [ /* @__PURE__ */ new Vector2(), /* @__PURE__ */ new Vector2(), /* @__PURE__ */ new Vector2() ];
+const _overlapSubject = [ /* @__PURE__ */ new Vector2(), /* @__PURE__ */ new Vector2(), /* @__PURE__ */ new Vector2() ];
+
+function getMaxAbsComponent( ...points ) {
+
+	let max = 1;
+	for ( let i = 0; i < points.length; i ++ ) {
+
+		const p = points[ i ];
+		max = Math.max( max, Math.abs( p.x ), Math.abs( p.y ), Math.abs( p.z ) );
+
+	}
+
+	return max;
+
+}
+
+function hasValidPlane( triangle ) {
+
+	return triangle.plane.normal.lengthSq() > 0.5;
+
+}
+
+// returns whether all the vertices of "other" lie on the plane of "planeTriangle"
+function areTrianglesCoplanar( planeTriangle, other, epsilon ) {
+
+	const plane = planeTriangle.plane;
+	const { a: oa, b: ob, c: oc } = other;
+
+	return (
+		Math.abs( plane.distanceToPoint( oa ) ) <= epsilon &&
+		Math.abs( plane.distanceToPoint( ob ) ) <= epsilon &&
+		Math.abs( plane.distanceToPoint( oc ) ) <= epsilon
+	);
+
+}
+
+function projectToPlane( point, origin, u, v, target ) {
+
+	_overlapDelta.subVectors( point, origin );
+	target.x = _overlapDelta.dot( u );
+	target.y = _overlapDelta.dot( v );
+
+}
+
+// clips the given convex polygon (in plane coordinates) against the half plane to the left of
+// the edge "start" -> "end".
+function clipPolygon( polygon, start, end, target, epsilon ) {
+
+	const count = polygon.length;
+	target.length = 0;
+	if ( count === 0 ) {
+
+		return target;
+
+	}
+
+	const ex = end.x - start.x;
+	const ey = end.y - start.y;
+
+	let prev = polygon[ count - 1 ];
+	let prevSide = ex * ( prev.y - start.y ) - ey * ( prev.x - start.x );
+	let prevInside = prevSide >= - epsilon;
+	for ( let i = 0; i < count; i ++ ) {
+
+		const cur = polygon[ i ];
+		const side = ex * ( cur.y - start.y ) - ey * ( cur.x - start.x );
+		const inside = side >= - epsilon;
+		if ( inside !== prevInside ) {
+
+			const t = prevSide / ( prevSide - side );
+			target.push( {
+				x: prev.x + ( cur.x - prev.x ) * t,
+				y: prev.y + ( cur.y - prev.y ) * t,
+			} );
+
+		}
+
+		if ( inside ) {
+
+			target.push( cur );
+
+		}
+
+		prev = cur;
+		prevSide = side;
+		prevInside = inside;
+
+	}
+
+	return target;
+
+}
+
+// Computes a point that lies inside the area shared by the two coplanar triangles. "boundary" must
+// be the non-degenerate triangle and "subject" may be degenerate (a segment or a point). The
+// result is the centroid of the (convex) overlap polygon. Returns false if it could not be
+// computed.
+function getCoplanarOverlapPoint( boundary, subject, target ) {
+
+	const normal = _overlapNormal.copy( boundary.plane.normal ).normalize();
+	const u = _overlapU;
+	const v = _overlapV;
+
+	// build an orthonormal basis of the plane with u x v = normal so the triangle winds CCW
+	u.subVectors( boundary.b, boundary.a );
+	if ( u.lengthSq() < ZERO_EPSILON_SQR ) {
+
+		u.subVectors( boundary.c, boundary.a );
+
+	}
+
+	if ( u.lengthSq() < ZERO_EPSILON_SQR ) {
+
+		return false;
+
+	}
+
+	u.normalize();
+	v.crossVectors( normal, u );
+
+	const origin = boundary.a;
+	projectToPlane( boundary.a, origin, u, v, _overlapSelf[ 0 ] );
+	projectToPlane( boundary.b, origin, u, v, _overlapSelf[ 1 ] );
+	projectToPlane( boundary.c, origin, u, v, _overlapSelf[ 2 ] );
+
+	// project the subject triangle and clip it against each of the boundary triangle's edges. The
+	// basis is chosen so the boundary triangle winds counter clockwise and "inside" is the left
+	// side of each edge.
+	projectToPlane( subject.a, origin, u, v, _overlapSubject[ 0 ] );
+	projectToPlane( subject.b, origin, u, v, _overlapSubject[ 1 ] );
+	projectToPlane( subject.c, origin, u, v, _overlapSubject[ 2 ] );
+
+	const scale = getMaxAbsComponent( boundary.a, boundary.b, boundary.c );
+	const epsilon = scale * scale * COPLANAR_EPSILON;
+
+	let polygon = _overlapSubject;
+	let buffer1 = [];
+	let buffer2 = [];
+	for ( let i = 0; i < 3 && polygon.length > 0; i ++ ) {
+
+		const next = ( i + 1 ) % 3;
+
+		// alternate target buffers so the input is never cleared while it's being read
+		if ( i % 2 === 0 ) {
+
+			buffer1 = clipPolygon( polygon, _overlapSelf[ i ], _overlapSelf[ next ], buffer1, epsilon );
+			polygon = buffer1;
+
+		} else {
+
+			buffer2 = clipPolygon( polygon, _overlapSelf[ i ], _overlapSelf[ next ], buffer2, epsilon );
+			polygon = buffer2;
+
+		}
+
+	}
+
+	if ( polygon.length === 0 ) {
+
+		return false;
+
+	}
+
+	let cx = 0;
+	let cy = 0;
+	for ( let i = 0, l = polygon.length; i < l; i ++ ) {
+
+		cx += polygon[ i ].x;
+		cy += polygon[ i ].y;
+
+	}
+
+	cx /= polygon.length;
+	cy /= polygon.length;
+
+	target.copy( origin ).addScaledVector( u, cx ).addScaledVector( v, cy );
+	return true;
+
+}
+
 /**
  * An extended version of three.js' Triangle class. A variety of derivative values are cached on
  * the object to accelerate the intersection functions. `.needsUpdate` must be set to true when
@@ -801,8 +991,38 @@ ExtendedTriangle.prototype.distanceToTriangle = ( function () {
 
 			if ( target1 || target2 ) {
 
-				if ( target1 ) lineTarget.getCenter( target1 );
-				if ( target2 ) lineTarget.getCenter( target2 );
+				// Coplanar triangles do not produce a usable intersection edge so use a point
+				// in the middle of the overlapping area instead. Both targets are set to the
+				// same point since the triangles touch there. The plane is taken from whichever
+				// triangle is not degenerate.
+				const scale = getMaxAbsComponent( this.a, this.b, this.c, other.a, other.b, other.c );
+				const epsilon = scale * COPLANAR_EPSILON;
+
+				let boundary = null;
+				let subject = null;
+				if ( hasValidPlane( this ) && areTrianglesCoplanar( this, other, epsilon ) ) {
+
+					boundary = this;
+					subject = other;
+
+				} else if ( hasValidPlane( other ) && areTrianglesCoplanar( other, this, epsilon ) ) {
+
+					boundary = other;
+					subject = this;
+
+				}
+
+				if ( boundary && getCoplanarOverlapPoint( boundary, subject, point ) ) {
+
+					if ( target1 ) target1.copy( point );
+					if ( target2 ) target2.copy( point );
+
+				} else {
+
+					if ( target1 ) lineTarget.getCenter( target1 );
+					if ( target2 ) lineTarget.getCenter( target2 );
+
+				}
 
 			}
 
